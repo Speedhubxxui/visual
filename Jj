@@ -1,99 +1,135 @@
--- Server Script for a Garden Plot
-local Plot = script.Parent
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
-local PLANT_GROW_TIME = 15 -- seconds for a plant to grow
-local PLANT_MODEL_NAME = "MyFlowerModel" -- Name of the plant model to spawn
-local PET_SPAWN_CHANCE = 0.5 -- 50% chance to spawn a pet on harvest
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
-local plotState = "empty" -- "empty", "planted", "grown"
-local plantInstance = nil
-local plantGrowthCoroutine = nil
+-- Define the ONLY pet models you want to spawn.
+-- IMPORTANT: These names MUST match models accessible in ReplicatedStorage or elsewhere if you dynamically load them.
+-- For this to work, you need to ensure models named "RaccoonPetModel" and "DragonflyPetModel"
+-- are present in ReplicatedStorage on your client, or whatever location the game loads them to.
+local PET_MODEL_NAMES = {
+    "RaccoonPetModel",
+    "DragonflyPetModel",
+}
 
--- Function to handle planting
-local function plantSeed(player)
-    if plotState == "empty" then
-        plotState = "planted"
-        print(player.Name .. " planted a seed on " .. Plot.Name)
+local PET_SPAWN_OFFSET = Vector3.new(3, 0, 0) -- Offset from your character to spawn the pet
+local MIN_WEIGHT = 0.5   -- Minimum visual scale for weight
+local MAX_WEIGHT = 2.0   -- Maximum visual scale for weight
+local MIN_AGE = 0.0      -- Minimum age (baby)
+local MAX_AGE = 1.0      -- Maximum age (adult/old)
 
-        -- Visual feedback for planting (e.g., a tiny sprout)
-        -- You'll likely want to create a small "sprout" model and parent it to the plot
-        local sprout = Instance.new("Part")
-        sprout.Size = Vector3.new(0.2, 0.2, 0.2)
-        sprout.BrickColor = BrickColor.new("Lime green")
-        sprout.Transparency = 0.5
-        sprout.Anchored = false
-        sprout.CanCollide = false
-        sprout.Parent = Plot
-        sprout.Position = Plot.Position + Vector3.new(0, Plot.Size.Y / 2 + sprout.Size.Y / 2, 0)
+local currentlyActivePets = {} -- Table to keep track of spawned pets
 
-        -- Start the growth process
-        plantGrowthCoroutine = coroutine.wrap(function()
-            task.wait(PLANT_GROW_TIME)
-            if plotState == "planted" then
-                plotState = "grown"
-                print("Plant on " .. Plot.Name .. " has grown!")
+-- Function to apply visual characteristics based on weight and age
+local function applyPetCharacteristics(petModel, weight, age)
+    -- Validate inputs to ensure they are within expected ranges
+    weight = math.clamp(weight, MIN_WEIGHT, MAX_WEIGHT)
+    age = math.clamp(age, MIN_AGE, MAX_AGE)
 
-                -- Remove sprout
-                if sprout then sprout:Destroy() end
+    -- **Weight (Scale)**
+    local scaleFactor = weight
+    for _, part in ipairs(petModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            -- Scale each part's size based on the weight factor
+            part.Size = part.Size * scaleFactor
+        end
+    end
 
-                -- Spawn the fully grown plant model
-                local plantModel = game.ReplicatedStorage:FindFirstChild(PLANT_MODEL_NAME):Clone()
-                if plantModel then
-                    plantModel.Parent = Plot
-                    plantModel:SetPrimaryPartCFrame(CFrame.new(Plot.Position + Vector3.new(0, Plot.Size.Y / 2 + plantModel.PrimaryPart.Size.Y / 2, 0)))
-                    plantInstance = plantModel
-                else
-                    warn("Plant model '" .. PLANT_MODEL_NAME .. "' not found in ReplicatedStorage!")
+    -- **Age (Visual Cue - Example: Color/Transparency/Particle)**
+    if age <= 0.2 then -- Very young (baby)
+        for _, part in ipairs(petModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Transparency = 0.2 -- Make babies slightly transparent
+            end
+        end
+        -- Add a simple particle effect for baby pets
+        local babyEffect = Instance.new("ParticleEmitter")
+        babyEffect.Texture = "rbxassetid://632462372" -- Example sparkle texture ID
+        babyEffect.Color = ColorSequence.new(Color3.new(0.5, 1, 1), Color3.new(0.8, 1, 1)) -- Light blue/white glow
+        babyEffect.Size = NumberSequence.new(0.1, 0.3)
+        babyEffect.Transparency = NumberSequence.new(0, 1)
+        babyEffect.Lifetime = NumberRange.new(0.5, 1.0)
+        babyEffect.Rate = 10
+        babyEffect.Acceleration = Vector3.new(0, 2, 0) -- Float upwards
+        babyEffect.Enabled = true
+        babyEffect.Parent = petModel.PrimaryPart or petModel:FindFirstChildOfClass("BasePart") -- Attach to primary part or any part
+    elseif age >= 0.8 then -- Older pets
+        for _, part in ipairs(petModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local originalColor = part.Color
+                -- Desaturate and darken slightly for an aged look
+                part.Color = Color3.new(originalColor.R * 0.7, originalColor.G * 0.7, originalColor.B * 0.7)
+            end
+        end
+    end
+end
+
+-- Function to spawn a visual pet
+-- Parameters: petName (string), weight (number), age (number)
+local function spawnVisualPet(petName, weight, age)
+    local character = LocalPlayer.Character
+    if not character or not character.PrimaryPart then
+        warn("Character or PrimaryPart not found! Cannot spawn pet.")
+        return
+    end
+
+    -- Attempt to find the pet model in ReplicatedStorage
+    local petModelTemplate = ReplicatedStorage:FindFirstChild(petName)
+    if not petModelTemplate then
+        warn("Pet model '" .. petName .. "' not found in ReplicatedStorage! Ensure the name is correct and it's accessible.")
+        -- Fallback: Create a simple placeholder if the model isn't found
+        local placeholder = Instance.new("Part")
+        placeholder.Size = Vector3.new(1,1,1)
+        placeholder.Shape = Enum.PartType.Ball
+        placeholder.BrickColor = BrickColor.new("Really red")
+        placeholder.Name = "PlaceholderPet"
+        petModelTemplate = Instance.new("Model")
+        placeholder.Parent = placeholder -- Parent the part to itself (this will be fixed below)
+        petModelTemplate.Name = "PlaceholderPetModel"
+        petModelTemplate.PrimaryPart = placeholder
+        -- Correcting the parenting for the placeholder model
+        placeholder.Parent = petModelTemplate
+    end
+
+    local newPet = petModelTemplate:Clone()
+    newPet.Parent = workspace -- Spawn the pet directly into the workspace for your view
+
+    -- Apply visual characteristics before positioning for accurate placement
+    applyPetCharacteristics(newPet, weight, age)
+
+    -- Position the pet near the player's character
+    local primaryPartSizeY = (newPet.PrimaryPart and newPet.PrimaryPart.Size.Y) or 1 -- Default to 1 if no primary part
+    local playerHeightOffset = character.PrimaryPart.Size.Y / 2
+    local petHeightOffset = primaryPartSizeY / 2
+    
+    local spawnCFrame = character.PrimaryPart.CFrame * CFrame.new(PET_SPAWN_OFFSET.X, playerHeightOffset - petHeightOffset, PET_SPAWN_OFFSET.Z)
+    newPet:SetPrimaryPartCFrame(spawnCFrame)
+
+    local petPrimaryPart = newPet.PrimaryPart
+    if petPrimaryPart then
+        -- Simple pet following behavior (purely visual, only for your client)
+        local followConnection = RunService.Heartbeat:Connect(function()
+            if character and character.PrimaryPart and newPet.Parent == workspace then
+                local targetPosition = character.PrimaryPart.Position + PET_SPAWN_OFFSET
+                -- Use Lerp for smoother visual following
+                petPrimaryPart.CFrame = petPrimaryPart.CFrame:Lerp(CFrame.new(targetPosition), 0.1)
+            else
+                -- Clean up the pet if the character disappears or pet is removed
+                if currentlyActivePets[newPet] then
+                    currentlyActivePets[newPet]:Disconnect()
+                    currentlyActivePets[newPet] = nil
+                    if newPet and newPet.Parent then
+                        newPet:Destroy()
+                    end
                 end
             end
-        end)()
-    else
-        print("Plot is not empty!")
+        end)
+        currentlyActivePets[newPet] = followConnection
     end
+
+    print("Spawned visual pet: " .. petName .. " with weight: " .. weight .. " and age: " .. age)
+    return newPet
 end
-
--- Function to handle harvesting
-local function harvestPlant(player)
-    if plotState == "grown" then
-        plotState = "empty"
-        print(player.Name .. " harvested a plant from " .. Plot.Name)
-
-        -- Remove the grown plant model
-        if plantInstance then
-            plantInstance:Destroy()
-            plantInstance = nil
-        end
-
-        -- Give player rewards (e.g., coins, XP)
-        -- You'll need to implement your own player data system
-        -- player.leaderstats.Coins.Value += 10
-
-        -- **Pet Spawner Integration**
-        if math.random() <= PET_SPAWN_CHANCE then
-            game.ReplicatedStorage.Events.SpawnPet:FireClient(player)
-            print("Chance met! Signalling client to spawn a pet.")
-        else
-            print("No pet spawned this time.")
-        end
-
-        return true -- Indicate successful harvest
-    else
-        print("Nothing to harvest yet!")
-        return false
-    end
-end
-
--- Basic interaction (e.g., clicking the plot)
-local clickDetector = Instance.new("ClickDetector")
-clickDetector.Parent = Plot
-
-clickDetector.MouseClick:Connect(function(player)
-    if plotState == "empty" then
-        plantSeed(player)
-    elseif plotState == "grown" then
-        harvestPlant(player)
-    end
-end)
-
--- Initialize the plot on server start
-print(Plot.Name .. " plot initialized.")
