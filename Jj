@@ -1,0 +1,99 @@
+-- Server Script for a Garden Plot
+local Plot = script.Parent
+
+local PLANT_GROW_TIME = 15 -- seconds for a plant to grow
+local PLANT_MODEL_NAME = "MyFlowerModel" -- Name of the plant model to spawn
+local PET_SPAWN_CHANCE = 0.5 -- 50% chance to spawn a pet on harvest
+
+local plotState = "empty" -- "empty", "planted", "grown"
+local plantInstance = nil
+local plantGrowthCoroutine = nil
+
+-- Function to handle planting
+local function plantSeed(player)
+    if plotState == "empty" then
+        plotState = "planted"
+        print(player.Name .. " planted a seed on " .. Plot.Name)
+
+        -- Visual feedback for planting (e.g., a tiny sprout)
+        -- You'll likely want to create a small "sprout" model and parent it to the plot
+        local sprout = Instance.new("Part")
+        sprout.Size = Vector3.new(0.2, 0.2, 0.2)
+        sprout.BrickColor = BrickColor.new("Lime green")
+        sprout.Transparency = 0.5
+        sprout.Anchored = false
+        sprout.CanCollide = false
+        sprout.Parent = Plot
+        sprout.Position = Plot.Position + Vector3.new(0, Plot.Size.Y / 2 + sprout.Size.Y / 2, 0)
+
+        -- Start the growth process
+        plantGrowthCoroutine = coroutine.wrap(function()
+            task.wait(PLANT_GROW_TIME)
+            if plotState == "planted" then
+                plotState = "grown"
+                print("Plant on " .. Plot.Name .. " has grown!")
+
+                -- Remove sprout
+                if sprout then sprout:Destroy() end
+
+                -- Spawn the fully grown plant model
+                local plantModel = game.ReplicatedStorage:FindFirstChild(PLANT_MODEL_NAME):Clone()
+                if plantModel then
+                    plantModel.Parent = Plot
+                    plantModel:SetPrimaryPartCFrame(CFrame.new(Plot.Position + Vector3.new(0, Plot.Size.Y / 2 + plantModel.PrimaryPart.Size.Y / 2, 0)))
+                    plantInstance = plantModel
+                else
+                    warn("Plant model '" .. PLANT_MODEL_NAME .. "' not found in ReplicatedStorage!")
+                end
+            end
+        end)()
+    else
+        print("Plot is not empty!")
+    end
+end
+
+-- Function to handle harvesting
+local function harvestPlant(player)
+    if plotState == "grown" then
+        plotState = "empty"
+        print(player.Name .. " harvested a plant from " .. Plot.Name)
+
+        -- Remove the grown plant model
+        if plantInstance then
+            plantInstance:Destroy()
+            plantInstance = nil
+        end
+
+        -- Give player rewards (e.g., coins, XP)
+        -- You'll need to implement your own player data system
+        -- player.leaderstats.Coins.Value += 10
+
+        -- **Pet Spawner Integration**
+        if math.random() <= PET_SPAWN_CHANCE then
+            game.ReplicatedStorage.Events.SpawnPet:FireClient(player)
+            print("Chance met! Signalling client to spawn a pet.")
+        else
+            print("No pet spawned this time.")
+        end
+
+        return true -- Indicate successful harvest
+    else
+        print("Nothing to harvest yet!")
+        return false
+    end
+end
+
+-- Basic interaction (e.g., clicking the plot)
+local clickDetector = Instance.new("ClickDetector")
+clickDetector.Parent = Plot
+
+clickDetector.MouseClick:Connect(function(player)
+    if plotState == "empty" then
+        plantSeed(player)
+    elseif plotState == "grown" then
+        harvestPlant(player)
+    end
+end)
+
+-- Initialize the plot on server start
+print(Plot.Name .. " plot initialized.")
